@@ -43,7 +43,7 @@ const keytar = require('keytar')
 const settings = require('../js/constants/settings')
 const siteSettings = require('../js/state/siteSettings')
 const spellCheck = require('./spellCheck')
-const flash = require('./flash')
+const flash = require('../js/flash')
 const contentSettings = require('../js/state/contentSettings')
 
 // Used to collect the per window state when shutting down the application
@@ -180,7 +180,7 @@ let loadAppStatePromise = SessionStore.loadAppState().catch(() => {
   return SessionStore.defaultAppState()
 })
 
-let flashEnabled = false
+let flashInitialized = false
 
 // Some settings must be set right away on startup, those settings should be handled here.
 loadAppStatePromise.then((initialState) => {
@@ -191,7 +191,7 @@ loadAppStatePromise.then((initialState) => {
   if (initialState.flash && initialState.flash.enabled === true) {
     if (flash.init()) {
       // Flash was initialized successfully
-      flashEnabled = true
+      flashInitialized = true
       return
     }
   }
@@ -346,7 +346,7 @@ app.on('ready', () => {
     // For tests we always want to load default app state
     const loadedPerWindowState = initialState.perWindowState
     delete initialState.perWindowState
-    initialState.flashEnabled = flashEnabled
+    initialState.flashInitialized = flashInitialized
     appActions.setState(Immutable.fromJS(initialState))
     return loadedPerWindowState
   }).then((loadedPerWindowState) => {
@@ -392,8 +392,12 @@ app.on('ready', () => {
       appActions.changeSetting(key, value)
     })
 
-    ipcMain.on(messages.CHANGE_SITE_SETTING, (e, hostPattern, key, value) => {
-      appActions.changeSiteSetting(hostPattern, key, value)
+    ipcMain.on(messages.CHANGE_SITE_SETTING, (e, hostPattern, key, value, temp) => {
+      appActions.changeSiteSetting(hostPattern, key, value, temp)
+    })
+
+    ipcMain.on(messages.REMOVE_SITE_SETTING, (e, hostPattern, key) => {
+      appActions.removeSiteSetting(hostPattern, key)
     })
 
     ipcMain.on(messages.SET_CLIPBOARD, (e, text) => {
@@ -401,8 +405,10 @@ app.on('ready', () => {
     })
 
     ipcMain.on(messages.SHOW_NOTIFICATION, (e, msg) => {
-      BrowserWindow.getFocusedWindow().webContents.send(messages.SHOW_NOTIFICATION,
-                                                        locale.translation(msg))
+      if (BrowserWindow.getFocusedWindow()) {
+        BrowserWindow.getFocusedWindow().webContents.send(messages.SHOW_NOTIFICATION,
+                                                          locale.translation(msg))
+      }
     })
 
     ipcMain.on(messages.SET_RESOURCE_ENABLED, (e, resourceName, enabled) => {
@@ -412,15 +418,6 @@ app.on('ready', () => {
     ipcMain.on(messages.CHECK_FLASH_INSTALLED, (e) => {
       flash.checkFlashInstalled((installed) => {
         e.sender.send(messages.FLASH_UPDATED, installed)
-      })
-    })
-
-    ipcMain.on(messages.SHOW_FLASH_INSTALLED_MESSAGE, (e) => {
-      flash.checkFlashInstalled((installed) => {
-        if (installed) {
-          BrowserWindow.getFocusedWindow().webContents.send(messages.SHOW_NOTIFICATION,
-                                                            locale.translation('flashInstalled'))
-        }
       })
     })
 

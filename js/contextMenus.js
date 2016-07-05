@@ -27,7 +27,7 @@ const locale = require('../js/l10n')
 const getSetting = require('./settings').getSetting
 const settings = require('./constants/settings')
 const textUtils = require('./lib/text')
-const {isUrl} = require('./lib/appUrlUtil')
+const {isIntermediateAboutPage, isUrl} = require('./lib/appUrlUtil')
 
 const isDarwin = process.platform === 'darwin'
 
@@ -206,11 +206,12 @@ function bookmarkTemplateInit (siteDetail, activeFrame) {
   const location = siteDetail.get('location')
   const isFolder = siteDetail.get('tags').includes(siteTags.BOOKMARK_FOLDER)
   const template = []
+
   if (!isFolder) {
     template.push(openInNewTabMenuItem(location, undefined, siteDetail.get('partitionNumber')),
       openInNewPrivateTabMenuItem(location),
       openInNewSessionTabMenuItem(location),
-      copyLinkLocationMenuItem(location),
+      copyAddressMenuItem('copyLinkAddress', location),
       CommonMenu.separatorMenuItem)
   } else {
     template.push(openAllInNewTabsMenuItem(appStoreRenderer.state.get('sites'), siteDetail),
@@ -239,6 +240,7 @@ function bookmarkTemplateInit (siteDetail, activeFrame) {
 
   template.push(addBookmarkMenuItem('addBookmark', siteUtil.getDetailFromFrame(activeFrame, siteTags.BOOKMARK), siteDetail, true),
     addFolderMenuItem(siteDetail, true))
+
   return template
 }
 
@@ -358,14 +360,16 @@ function tabTemplateInit (frameProps) {
 
   if (!frameProps.get('isPrivate')) {
     const isPinned = frameProps.get('pinnedLocation')
-
-    items.push({
-      label: locale.translation(isPinned ? 'unpinTab' : 'pinTab'),
-      click: (item) => {
-        // Handle converting the current tab window into a pinned site
-        windowActions.setPinned(frameProps, !isPinned)
-      }
-    })
+    const location = frameProps.get('location')
+    if (!(location === 'about:blank' || location === 'about:newtab' || isIntermediateAboutPage(location))) {
+      items.push({
+        label: locale.translation(isPinned ? 'unpinTab' : 'pinTab'),
+        click: (item) => {
+          // Handle converting the current tab window into a pinned site
+          windowActions.setPinned(frameProps, !isPinned)
+        }
+      })
+    }
   }
 
   // items.push({
@@ -630,11 +634,24 @@ const openInNewSessionTabMenuItem = (location, parentFrameKey) => {
   }
 }
 
-const copyLinkLocationMenuItem = (location) => {
+const saveAsMenuItem = (label, location) => {
   return {
-    label: locale.translation('copyLinkAddress'),
-    click: () => {
-      clipboard.writeText(location)
+    label: locale.translation(label),
+    click: (item, focusedWindow) => {
+      if (focusedWindow && location) {
+        focusedWindow.webContents.downloadURL(location)
+      }
+    }
+  }
+}
+
+const copyAddressMenuItem = (label, location) => {
+  return {
+    label: locale.translation(label),
+    click: (item, focusedWindow) => {
+      if (focusedWindow && location) {
+        clipboard.writeText(location)
+      }
     }
   }
 }
@@ -649,7 +666,7 @@ const copyEmailAddressMenuItem = (location) => {
 }
 
 const searchSelectionMenuItem = (location) => {
-  var searchText = textUtils.ellipse(location, 3)
+  var searchText = textUtils.ellipse(location)
   return {
     label: locale.translation('openSearch').replace(/{{\s*selectedVariable\s*}}/, searchText),
     click: (item, focusedWindow) => {
@@ -661,10 +678,42 @@ const searchSelectionMenuItem = (location) => {
   }
 }
 
+const showDefinitionMenuItem = (selectionText) => {
+  let lookupText = textUtils.ellipse(selectionText, 3)
+  return {
+    label: locale.translation('lookupSelection').replace(/{{\s*selectedVariable\s*}}/, lookupText),
+    click: (item, focusedWindow) => {
+      webviewActions.showDefinitionForSelection()
+    }
+  }
+}
+
 function mainTemplateInit (nodeProps, frame) {
   const template = []
 
-  if (nodeProps.linkURL !== '') {
+  if (nodeProps.frameURL && nodeProps.frameURL.startsWith('chrome-extension://mnojpmjdmbbfmejpflffifhffcmidifd/about-flash.html')) {
+    const pageOrigin = siteUtil.getOrigin(nodeProps.pageURL)
+    template.push({
+      label: locale.translation('allowFlashOnce'),
+      click: () => {
+        appActions.changeSiteSetting(pageOrigin, 'flash', 1)
+      }
+    }, {
+      label: locale.translation('allowFlashAlways'),
+      click: () => {
+        const expirationTime = Date.now() + 7 * 24 * 3600 * 1000
+        appActions.changeSiteSetting(pageOrigin, 'flash', expirationTime)
+      }
+    })
+    return template
+  }
+
+  const isLink = nodeProps.linkURL && nodeProps.linkURL !== ''
+  const isImage = nodeProps.mediaType === 'image'
+  const isInputField = nodeProps.isEditable || nodeProps.inputFieldType !== 'none'
+  const isTextSelected = nodeProps.selectionText.length > 0
+
+  if (isLink) {
     template.push(openInNewTabMenuItem(nodeProps.linkURL, frame.get('isPrivate'), frame.get('partitionNumber'), frame.get('key')),
       openInNewPrivateTabMenuItem(nodeProps.linkURL, frame.get('key')),
       openInNewWindowMenuItem(nodeProps.linkURL, frame.get('isPrivate'), frame.get('partitionNumber')),
@@ -675,27 +724,15 @@ function mainTemplateInit (nodeProps, frame) {
     if (nodeProps.linkURL.toLowerCase().startsWith('mailto:')) {
       template.push(copyEmailAddressMenuItem(nodeProps.linkURL))
     } else {
-      template.push(copyLinkLocationMenuItem(nodeProps.linkURL), {
-        label: locale.translation('saveLinkAs'),
-        click: (item, focusedWindow) => {
-          if (focusedWindow && nodeProps.linkURL) {
-            focusedWindow.webContents.downloadURL(nodeProps.linkURL)
-          }
-        }
-      },
-      CommonMenu.separatorMenuItem)
+      template.push(
+        saveAsMenuItem('saveLinkAs', nodeProps.linkURL),
+        copyAddressMenuItem('copyLinkAddress', nodeProps.linkURL),
+        CommonMenu.separatorMenuItem)
     }
   }
 
-  if (nodeProps.mediaType === 'image') {
+  if (isImage) {
     template.push({
-      label: locale.translation('saveImage'),
-      click: (item, focusedWindow) => {
-        if (focusedWindow && nodeProps.srcURL) {
-          focusedWindow.webContents.downloadURL(nodeProps.srcURL)
-        }
-      }
-    }, {
       label: locale.translation('openImageInNewTab'),
       click: (item, focusedWindow) => {
         if (focusedWindow && nodeProps.srcURL) {
@@ -703,17 +740,13 @@ function mainTemplateInit (nodeProps, frame) {
           focusedWindow.webContents.send(messages.SHORTCUT_NEW_FRAME, nodeProps.srcURL)
         }
       }
-    }, {
-      label: locale.translation('copyImageAddress'),
-      click: (item, focusedWindow) => {
-        if (focusedWindow && nodeProps.srcURL) {
-          clipboard.writeText(nodeProps.srcURL)
-        }
-      }
-    }, CommonMenu.separatorMenuItem)
+    },
+    saveAsMenuItem('saveImage', nodeProps.srcURL),
+    copyAddressMenuItem('copyImageAddress', nodeProps.srcURL),
+    CommonMenu.separatorMenuItem)
   }
 
-  if (nodeProps.isEditable || nodeProps.inputFieldType !== 'none') {
+  if (isInputField) {
     let misspelledSuggestions = []
     if (nodeProps.misspelledWord) {
       const info = ipc.sendSync(messages.GET_MISSPELLING_INFO, nodeProps.selectionText)
@@ -721,6 +754,7 @@ function mainTemplateInit (nodeProps, frame) {
         misspelledSuggestions = getMisspelledSuggestions(nodeProps.selectionText, info.isMisspelled, info.suggestions)
       }
     }
+
     const editableItems = getEditableItems(nodeProps.selectionText, nodeProps.editFlags)
     template.push(...misspelledSuggestions, {
       label: locale.translation('undo'),
@@ -731,66 +765,74 @@ function mainTemplateInit (nodeProps, frame) {
       accelerator: 'Shift+CmdOrCtrl+Z',
       role: 'redo'
     }, CommonMenu.separatorMenuItem, ...editableItems, CommonMenu.separatorMenuItem)
-  } else if (nodeProps.selectionText.length > 0) {
+  } else if (isTextSelected) {
+    if (isDarwin) {
+      template.push(showDefinitionMenuItem(nodeProps.selectionText),
+        CommonMenu.separatorMenuItem
+      )
+    }
+
     template.push(searchSelectionMenuItem(nodeProps.selectionText), {
       label: locale.translation('copy'),
       accelerator: 'CmdOrCtrl+C',
       role: 'copy'
     }, CommonMenu.separatorMenuItem)
   } else {
-    if (nodeProps.linkURL) {
-      template.push(addBookmarkMenuItem('bookmarkLink', {
-        location: nodeProps.linkURL,
-        tags: [siteTags.BOOKMARK]
-      }, false))
-    } else {
-      template.push(
-        {
-          label: locale.translation('back'),
-          enabled: frame.get('canGoBack'),
-          click: (item, focusedWindow) => {
-            if (focusedWindow) {
-              focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_BACK)
+    if (!isImage) {
+      if (isLink) {
+        template.push(addBookmarkMenuItem('bookmarkLink', {
+          location: nodeProps.linkURL,
+          tags: [siteTags.BOOKMARK]
+        }, false))
+      } else {
+        template.push(
+          {
+            label: locale.translation('back'),
+            enabled: frame.get('canGoBack'),
+            click: (item, focusedWindow) => {
+              if (focusedWindow) {
+                focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_BACK)
+              }
+            }
+          }, {
+            label: locale.translation('forward'),
+            enabled: frame.get('canGoForward'),
+            click: (item, focusedWindow) => {
+              if (focusedWindow) {
+                focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_FORWARD)
+              }
+            }
+          }, {
+            label: locale.translation('reloadPage'),
+            click: (item, focusedWindow) => {
+              if (focusedWindow) {
+                focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_RELOAD)
+              }
+            }
+          },
+          CommonMenu.separatorMenuItem,
+          addBookmarkMenuItem('bookmarkPage', siteUtil.getDetailFromFrame(frame, siteTags.BOOKMARK), false), {
+            label: locale.translation('find'),
+            accelerator: 'CmdOrCtrl+F',
+            click: function (item, focusedWindow) {
+              focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_SHOW_FINDBAR)
+            }
+          }, {
+            label: locale.translation('print'),
+            accelerator: 'CmdOrCtrl+P',
+            click: function (item, focusedWindow) {
+              focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_PRINT)
             }
           }
-        }, {
-          label: locale.translation('forward'),
-          enabled: frame.get('canGoForward'),
-          click: (item, focusedWindow) => {
-            if (focusedWindow) {
-              focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_FORWARD)
-            }
-          }
-        }, {
-          label: locale.translation('reloadPage'),
-          click: (item, focusedWindow) => {
-            if (focusedWindow) {
-              focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_RELOAD)
-            }
-          }
-        },
-        CommonMenu.separatorMenuItem,
-        addBookmarkMenuItem('bookmarkPage', siteUtil.getDetailFromFrame(frame, siteTags.BOOKMARK), false), {
-          label: locale.translation('find'),
-          accelerator: 'CmdOrCtrl+F',
-          click: function (item, focusedWindow) {
-            focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_SHOW_FINDBAR)
-          }
-        }, {
-          label: locale.translation('print'),
-          accelerator: 'CmdOrCtrl+P',
-          click: function (item, focusedWindow) {
-            focusedWindow.webContents.send(messages.SHORTCUT_ACTIVE_FRAME_PRINT)
-          }
-        }
-        // CommonMenu.separatorMenuItem
-        // TODO: bravery menu goes here
-        )
+          // CommonMenu.separatorMenuItem
+          // TODO: bravery menu goes here
+          )
+      }
+
+      template.push(CommonMenu.separatorMenuItem)
     }
 
-    template.push(CommonMenu.separatorMenuItem)
-
-    if (!nodeProps.linkURL) {
+    if (!isLink && !isImage) {
       template.push({
         label: locale.translation('viewPageSource'),
         click: (item, focusedWindow) => {
@@ -809,6 +851,20 @@ function mainTemplateInit (nodeProps, frame) {
     }
   })
 
+  if (getSetting(settings.LAST_PASS_ENABLED)) {
+    template.push(
+      CommonMenu.separatorMenuItem,
+      {
+        label: 'LastPass',
+        click: (item, focusedWindow) => {
+          if (focusedWindow) {
+            nodeProps.height = 448
+            nodeProps.width = 350
+            ipc.send('chrome-browser-action-clicked', 'hdokiejnpimakedhajhdlcegeplioahd', frame.get('tabId'), 'LastPass', nodeProps)
+          }
+        }
+      })
+  }
   if (getSetting(settings.ONE_PASSWORD_ENABLED)) {
     template.push(
       CommonMenu.separatorMenuItem,
@@ -816,7 +872,7 @@ function mainTemplateInit (nodeProps, frame) {
         label: '1Password',
         click: (item, focusedWindow) => {
           if (focusedWindow) {
-            ipc.send('chrome-browser-action-clicked', 'aomjjhallfgjeglblehebfpbcfeobpgk', '1Password', nodeProps)
+            ipc.send('chrome-browser-action-clicked', 'aomjjhallfgjeglblehebfpbcfeobpgk', frame.get('tabId'), '1Password', nodeProps)
           }
         }
       })
@@ -828,7 +884,7 @@ function mainTemplateInit (nodeProps, frame) {
         label: 'Dashlane',
         click: (item, focusedWindow) => {
           if (focusedWindow) {
-            ipc.send('chrome-browser-action-clicked', 'fdjamakpfbbddfjaooikfcpapjohcfmg', 'Dashlane', nodeProps)
+            ipc.send('chrome-browser-action-clicked', 'fdjamakpfbbddfjaooikfcpapjohcfmg', frame.get('tabId'), 'Dashlane', nodeProps)
           }
         }
       })
